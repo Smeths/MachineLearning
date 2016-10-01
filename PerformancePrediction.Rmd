@@ -1,0 +1,164 @@
+---
+title: "Performance Prediction"
+author: "Smeths"
+date: "24 August 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Summary
+
+The objective of this assignment is to build a model which predicts "how well" an exercise is being performed. Specifically, whether biceps curls are being performed correctly (classe A in the dataset below) or with a common error (classe B to E).
+
+* B - Throwing elbows to the front
+* C - Lifting the dumbbell only half way
+* D - Lowering the dumbbell only half way
+* E - Throwing hips to the front
+
+Six different people performed the exercise in one of the manners described above with accelerometers and gyroscopes attached to different areas; specifically to their belt, formarm, arm and dumbbell. Readings where taken from these sensors and these reading form the dataset used in this project.
+
+The dataset consists of 19622 reading of 160 different variables. The first 7 variables relate to the time the exercise was performed and who performed it; variables 8 to 45 are relate to accelerometer and gyroscopic reading taken from the belt; variables 46 to 83 relate to accelerometer and gyroscopic reading taken from the arm; variables 84 to 121 relate to accelerometer and gyroscopic reading taken from the dumbbell; variables 122 to 159 relate to accelerometer and gyroscopic reading taken from the forearm and variable 160 is the classe variable.
+
+## Cleaning
+
+As not all of the data in the training set provided is available in the testing set, to clean the data I have removed all of the unavailable and irrelevant variables from the training set. I have also split the training data into a validation and training set, then scaled all of the data according to training set parameters. I have then split the training data into a training set and a validation, so that I can assess the out of sample error before using the model on the testing set.
+
+```{r cleaning, echo=FALSE, message=FALSE}
+library(caret)
+# Downloading Training Data
+url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+trainfile <- "training.csv"
+#download.file(url, trainfile, method="wget")
+url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+testfile <- "testing.csv"
+#download.file(url, testfile, method="wget")
+
+# loading testing and training data
+data <- read.csv(trainfile)
+testing <- read.csv(testfile)
+
+# Finding variables used in the test data and extracting modelling variables
+keep <- as.vector(apply(testing,2,function(x) sum(is.na(x)) != 20))
+keep[1:7] <- FALSE
+testing <- testing[,keep]
+
+# Keeping the same data in the training set
+keep[160] = TRUE
+data <- data[,keep]
+
+# splitting into training and validation set
+set.seed(100)
+intrain <- createDataPartition(y=data$classe,p=0.6, list=FALSE)
+training <- data[intrain,]
+valid <- data[-intrain,]
+
+# Scaling training data
+scaleObj <- preProcess(training[,-53],method=c("center","scale"))
+straining <- predict(scaleObj,training[,-53])
+straining$classe <- training$classe
+
+# Scaling the validation set using the same scale object
+svalid <- predict(scaleObj,valid[,-53])
+svalid$classe <- valid$classe
+
+# Scaling the test set using the same scale object
+stesting <- predict(scaleObj,testing)
+```
+
+## Exploratory Analysis
+
+I have split the classe variable into 5 factor variables, so that I can analyse each separately. I have then produced plots of the most variable data collected at the belt, forearm, arm and dumbbell and coloured each plot according to the classe the variable are likely to predict. E.g. for data collected at the belt, I have coloured the data according the factor variable for classe E (throwing hips to the front). 
+
+```{r exploratory plots, echo=FALSE}
+# Libraries needed
+library(ggplot2)
+library(grid)
+library(gridExtra)
+
+# Finding variable the largest number of unique data values
+
+vardata <- nearZeroVar(training, saveMetrics = TRUE)
+highunique <- vardata$percentUnique > 12
+vardata[highunique,]
+
+ptraining <- straining
+ptraining$A <- as.factor(ptraining$classe == "A")
+ptraining$B <- as.factor(ptraining$classe == "B")
+ptraining$C <- as.factor(ptraining$classe == "C")
+ptraining$D <- as.factor(ptraining$classe == "D")
+ptraining$E <- as.factor(ptraining$classe == "E")
+
+p1 <- ggplot(data=ptraining,aes(pitch_belt,yaw_belt,colour=E)) + geom_point(alpha = 0.5)
+p2 <- ggplot(data=ptraining,aes(roll_dumbbell,yaw_dumbbell,colour=C)) + geom_point(alpha = 0.5)
+p3 <- ggplot(data=ptraining,aes(roll_dumbbell,yaw_dumbbell,colour=D)) + geom_point(alpha = 0.5)
+p4 <- ggplot(data=ptraining,aes(pitch_forearm,magnet_forearm_y,colour=B)) + geom_point(alpha = 0.5)
+grid.arrange(p1,p2,p3,p4,ncol=2)
+
+```
+
+The plot of the belt variables does show some separation, however there is no obvious separation for the rest of the plots. 
+
+## Pre Processing
+
+I have used random forest model as although it is difficult to interpret it was more accurate that other models (such as lda) which I experimented with. However, running a random forest model with the full dataset takes too much time on my computer, therefore a have pre preprocessed the data using priciple component analysis and kept the first 15 principle components. The plot and data below show that this explains around 86% of the variance in the model.
+
+```{r pca, echo=FALSE}
+
+####################
+# Fitting rf model #
+####################
+
+# singular value decomposition
+svd <-  svd(straining[,-53])
+plot(svd$d^2/sum(svd$d^2), xlab = "Column", ylab = "Prop. of variance explained", pch = 19)
+svd_total <- svd$d^2/sum(svd$d^2)
+svd15 <- sum(svd_total[1:15])
+svd15
+
+```
+
+## Model Fitting
+
+The following code performs the preprocessing and model fitting and gives a summary of the fitted model. As can be seen below, cross validation was done with the bootstrap method using 25 replications and the model has an accuracy of 94%.
+
+```{r model, cache=TRUE}
+
+# Set seed for repeatability
+
+set.seed(100)
+
+# As random forest can be slow I shall preprocess using a PCA analysis and
+# keep only the first 5 principle components
+
+# Preprocessing data
+preProc <- preProcess(straining[,-53],method="pca",pcaComp=15)
+strainPC <- predict(preProc,straining[,-53])
+strainPC$classe <- straining[,53]
+
+modrf <- train(classe ~ .,method="rf",data=strainPC)
+modrf
+
+```
+
+## Out of Sample Error
+
+The following code assesses the out of sample error using the confusion matrix provided by the caret package and predicts outcomes for the test cases required as part of the assessment
+
+```{r outofsample}
+# Assessing out of sample error
+svalidPC <- predict(preProc,svalid[,-53])
+predvalrf <- predict(modrf,svalidPC)
+confusionMatrix(svalid$classe,predvalrf)
+
+# Predicting using test data
+testrfPC <-predict(preProc,stesting)
+predrf <- predict(modrf,testrfPC)
+predrf
+```
+
+# Concluding Remarks
+
+The out of sample accuracy seems higher than the accuracy on the training set alone, which seems strange but not impossible. I would of also have liked to have used a greater number of principle components and kept a larger proportion of the model variance, however my computer struggled when I used more than 15. However the model produced not seem to be accurate in its predictions.
